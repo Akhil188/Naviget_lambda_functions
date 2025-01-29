@@ -1,0 +1,74 @@
+# Ignore Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore environment files
+.env
+.venv/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+Pipfile.lock
+
+# Ignore virtual environments
+*.swp
+*.swo
+*.bak
+
+# Ignore logs and debug files
+logs/
+*.log
+*.out
+
+# Ignore cache files
+.cache/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# Ignore DICOM test files and temporary files
+*.dcm~
+*.tmp
+*.bak
+
+# Ignore Supabase credentials and generated files
+.supabase/
+.supabase-config.json
+
+# Ignore AWS credentials and configuration
+.aws/
+.aws-config
+.aws-credentials
+credentials.json
+
+# Ignore numpy cache files
+*.npy
+*.npz
+
+# Ignore UUID-based temp files
+*uuid-*.json
+
+# Ignore cloud deployment artifacts
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+*.terraform/
+.cloudformation/
+
+# Ignore common IDE configurations
+.vscode/
+.idea/
+*.iml
+
+# Ignore Docker and container-related files
+.dockerignore
+docker-compose.override.yml
+build/
+dist/
+
+# Ignore Lambda deployment packages
+lambda_function.zip
+package/
+*.tar.gz
