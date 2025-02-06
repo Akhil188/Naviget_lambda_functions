@@ -11,6 +11,7 @@ from database import DatabaseHandler
 from s3_handler import S3Handler
 from sns_handler import SNSHandler
 from dicom_processor import DicomProcessor
+from openai_handler import OpenAIHandler
 
 # Initialize clients
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -23,6 +24,7 @@ db_handler = DatabaseHandler(supabase)
 s3_handler = S3Handler()
 sns_handler = SNSHandler(ERROR_TOPIC_ARN, SNS_TOPIC_ARN)
 dicom_processor = DicomProcessor()
+openai_handler = OpenAIHandler()
 
 def is_dicom_file(key: str) -> bool:
     """Check if the file is likely a DICOM file based on extension or lack thereof"""
@@ -212,6 +214,35 @@ def lambda_handler(event, context):
                         "processed_at": datetime.utcnow().isoformat()
                     }
                 }
+
+                # Get study description from metadata
+                study_description = combined_metadata.get('StudyDescription', '')
+                if study_description:
+                    # Generate and save the AI image
+                    image_data = openai_handler.generate_medical_image(study_description)
+                    if image_data:
+                        # Define image path
+                        image_output_key = f"{base_output_key}_ai_visualization.png"
+                        tmp_image_path = f"/tmp/{upload_id}_ai_visualization.png"
+                        
+                        # Save image temporarily
+                        with open(tmp_image_path, 'wb') as f:
+                            f.write(image_data)
+                        
+                        # Upload to S3
+                        s3_handler.upload_file(tmp_image_path, bucket, image_output_key)
+                        
+                        # Generate presigned URL for the image
+                        image_url = s3_handler.generate_presigned_url(bucket, image_output_key)
+                        
+                        # Add image information to metadata
+                        metadata_json['ai_visualization'] = {
+                            'url': image_url,
+                            'generated_from': study_description
+                        }
+                        
+                        # Cleanup
+                        os.remove(tmp_image_path)
 
                 with open(tmp_metadata_path, 'w', encoding='utf-8') as f:
                     json.dump(metadata_json, f, indent=4, ensure_ascii=False)

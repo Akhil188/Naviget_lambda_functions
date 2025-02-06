@@ -1,9 +1,13 @@
 import io
 import zipfile
+import os
+import boto3
 from clients import s3_client
 from notifications import send_error_notification
 
 CHUNK_SIZE = 50 * 1024 * 1024  # 50MB chunks
+
+s3_client = boto3.client("s3")
 
 def process_zip_file_streaming(bucket_name: str, object_key: str, extracted_prefix: str, user_id: str) -> bool:
     """Process the ZIP file using streaming to minimize memory usage"""
@@ -44,26 +48,23 @@ def process_zip_file_streaming(bucket_name: str, object_key: str, extracted_pref
         
         # Process ZIP contents
         try:
-            with zipfile.ZipFile(zip_buffer) as zip_file:
-                file_count = 0
-                for file_info in zip_file.infolist():
-                    if file_info.file_size > 0:  # Skip directories
-                        extracted_key = f"{extracted_prefix}/{file_info.filename}"
-                        print(f"Processing file: {file_info.filename}")
-                        
-                        # Stream each file from zip to S3
-                        with zip_file.open(file_info) as source_file:
-                            s3_client.upload_fileobj(
-                                source_file,
-                                bucket_name,
-                                extracted_key,
-                                ExtraArgs={'ContentType': 'application/octet-stream'}
-                            )
-                            file_count += 1
-                            print(f"Extracted: {extracted_key}")
-                
-                print(f"Successfully extracted {file_count} files")
-                return True
+            zip_path = f"/tmp/{os.path.basename(object_key)}"
+            
+            # Download ZIP from S3
+            s3_client.download_file(bucket_name, object_key, zip_path)
+
+            # Create the extracted folder if it doesn't exist
+            extracted_folder = "/tmp/extracted_dicom"
+            os.makedirs(extracted_folder, exist_ok=True)
+
+            # Extract zip contents
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extracted_folder)  # Extract to the specified folder
+
+            # Log the contents of the extracted folder
+            print(f"Extracted files: {os.listdir(extracted_folder)}")
+            
+            return True  # Return True if extraction was successful
                 
         except Exception as e:
             raise Exception(f"Failed during ZIP extraction: {str(e)}")
