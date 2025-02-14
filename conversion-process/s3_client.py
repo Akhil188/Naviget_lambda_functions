@@ -5,7 +5,7 @@ import os
 class S3Client:
     def __init__(self):
         self.client = boto3.client('s3')
-        self.bucket_name = 'naviget-chandu-test'
+        self.bucket_name = 'naviget-user-data-files '
 
     def generate_output_files(self, company_id: str, user_id: str, upload_id: str) -> list:
         """Generate and upload output files to S3."""

@@ -334,11 +334,11 @@ def lambda_handler(event, context):
 
         # Load JSON data from S3
         json_file_path = f"{company_id}/{user_id}/uploads/{upload_id}/temp/"
-        print(f"Looking for JSON files in: s3://naviget-chandu-test/{json_file_path}")
+        print(f"Looking for JSON files in: s3://naviget-user-data-files /{json_file_path}")
         
         try:
             response = s3_client.list_objects_v2(
-                Bucket='naviget-chandu-test',
+                Bucket='naviget-user-data-files ',
                 Prefix=json_file_path
             )
             print("S3 list response:", json_safe_dumps(response))
@@ -348,13 +348,13 @@ def lambda_handler(event, context):
             print("Found JSON files:", json_files)
             
             if not json_files:
-                raise Exception(f"No JSON files found in s3://naviget-chandu-test/{json_file_path}")
+                raise Exception(f"No JSON files found in s3://naviget-user-data-files/{json_file_path}")
                 
             json_file = json_files[0]
             print(f"Reading file: {json_file}")
             
             s3_response = s3_client.get_object(
-                Bucket='naviget-chandu-test',
+                Bucket='naviget-user-data-files ',
                 Key=json_file
             )
             print("Got S3 object, reading content...")
