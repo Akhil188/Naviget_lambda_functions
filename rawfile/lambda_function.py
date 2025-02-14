@@ -33,22 +33,57 @@ def is_dicom_file(key: str) -> bool:
     return not any(lower_key.endswith(ext) for ext in non_dicom_extensions)
 
 def process_pixel_data(dicom_dataset, key: str) -> np.ndarray:
-    """Process pixel data with proper handling of signed/unsigned conversion"""
-    pixel_array = dicom_dataset.pixel_array
-    
-    # Check if we need to convert from unsigned to signed
-    if hasattr(dicom_dataset, 'PixelRepresentation') and dicom_dataset.PixelRepresentation == 1:
-        # Convert unsigned to signed if needed
+    """Process pixel data with proper handling of signed/unsigned conversion and scaling"""
+    try:
+        # Handle JPEG compressed images
+        if not hasattr(dicom_dataset, 'pixel_array'):
+            raise RuntimeError("No pixel data available")
+            
+        pixel_array = dicom_dataset.pixel_array
+        
+        # Get bit depth information
+        bits_stored = getattr(dicom_dataset, 'BitsStored', 16)
+        pixel_representation = getattr(dicom_dataset, 'PixelRepresentation', 0)
+        
+        # Convert to float32 first to prevent overflow during calculations
+        pixel_array = pixel_array.astype(np.float32)
+        
+        # Scale down values if they exceed int16 range
+        max_val = np.max(pixel_array)
+        if max_val > 32767:
+            scale_factor = 32767 / max_val
+            pixel_array = pixel_array * scale_factor
+            print(f"Scaled pixel data for {key} by factor {scale_factor}")
+        
+        # Convert to int16 with proper handling of signed/unsigned
+        if pixel_representation == 1:  # Signed
+            pixel_array = np.clip(pixel_array, -32768, 32767)
+        else:  # Unsigned
+            pixel_array = np.clip(pixel_array, 0, 32767)
+        
         pixel_array = pixel_array.astype(np.int16)
-        # If the data was unsigned but marked as signed, we need to handle negative values
-        pixel_array[pixel_array > 32767] -= 65536
-        print(f"Converted pixel data for {key} from unsigned to signed representation")
-    
-    return pixel_array
+        
+        print(f"Successfully processed pixel data for {key}")
+        return pixel_array
+        
+    except Exception as e:
+        print(f"Error in process_pixel_data for {key}: {str(e)}")
+        raise
 
 def lambda_handler(event, context):
     print("### Lambda Invoked ###")
     conversion_id = str(uuid4())
+    
+    # Check for required DICOM plugins
+    try:
+        import pylibjpeg
+    except ImportError:
+        print("Warning: pylibjpeg not installed. JPEG compressed DICOM files may fail.")
+        
+    try:
+        import openjpeg
+    except ImportError:
+        print("Warning: openjpeg not installed. JPEG2000 compressed DICOM files may fail.")
     
     try:
         # Process each SNS record
@@ -74,14 +109,28 @@ def lambda_handler(event, context):
                 raise ValueError("Missing required keys in SNS message.")
 
             # Define S3 paths
-            bucket = 'naviget-chandu-test'
-            folder_key = f"{company_id}/{user_id}/uploads/{upload_id}/extracted/"
+            bucket = 'naviget-user-data-files'
+            folder_key = f"{company_id}/{user_id}/uploads/{upload_id}/extracted/{upload_id}"
+            print("----------------------------")
+            print('folder_key',folder_key)
             folder_key = folder_key.rstrip('/') + '/'
             print(f"S3 Folder Key: {folder_key}")
 
-            # List objects in S3
+            # List all objects inside the extracted folder
             response = s3_handler.list_objects(bucket, folder_key)
-            print(f"S3 Response: {response}")
+            if "Contents" in response:
+                for obj in response["Contents"]:
+                    if obj["Key"].endswith("/"):
+                        continue
+                # Dynamically determine the deepest subfolder where files exist
+                    possible_folder = os.path.dirname(obj["Key"]) + "/"
+                    print(f"Detected actual folder path: {possible_folder}")
+                    folder_key = possible_folder  # Update to the correct folder
+
+            # Fetch files from the dynamically detected folder
+            response = s3_handler.list_objects(bucket, folder_key)
+
+            print(f"S3 Response: {response}") 
 
             if 'Contents' not in response:
                 print(f"No files found in S3 folder: {folder_key}")
@@ -182,8 +231,9 @@ def lambda_handler(event, context):
                 }
 
             # Define output paths
-            parent_folder = folder_key.rsplit('/', 3)[0]
-            base_output_key = f"{parent_folder}/{upload_id}/temp/{upload_id}"
+            parent_folder = folder_key.rsplit('/', 6)[0]
+            print('parent_folder',parent_folder)
+            base_output_key = f"{parent_folder}/temp/{upload_id}"
             raw_output_key = f"{base_output_key}.raw"
             metadata_output_key = f"{base_output_key}-settings.json"
 
@@ -265,7 +315,7 @@ def lambda_handler(event, context):
             # Update database
             db_handler.update_files_status(upload_id, 'raw_file_generated')
             db_handler.update_status_history(status_id, 'raw_file_generated', 'Raw File has been extracted.')
-            db_handler.insert_file_conversion(conversion_id, upload_id, 'pending', raw_output_key, raw_file_url, json_file_url)
+            db_handler.insert_file_conversion(conversion_id, upload_id, 'pending', raw_output_key, raw_file_url, json_file_url, image_url)
 
             # Send success notification
             sns_message = {
@@ -278,6 +328,7 @@ def lambda_handler(event, context):
                 "message": "Successfully extracted raw file",
                 "timestamp": datetime.utcnow().isoformat()
             }
+            print(sns_message)
             sns_handler.send_success_notification(sns_message)
 
         return {

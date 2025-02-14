@@ -26,7 +26,7 @@ def lambda_handler(event, context):
         status_id = str(uuid4())
 
         # Validate file
-        if not object_key.endswith(f"{upload_id}.zip") or parts[4] != 'input':
+        if not (object_key.endswith('.zip') or object_key.endswith('/')):
             return {
                 "statusCode": 200,
                 "body": "File skipped - not for processing"
@@ -35,10 +35,10 @@ def lambda_handler(event, context):
         # Define temp file paths
         extracted_folder = "/tmp/extracted_dicom"
 
-        # Process ZIP using zip_processor
+        # Process ZIP or folder using zip_processor
         extracted_prefix = f"{company_id}/{user_id}/uploads/{upload_id}/extracted/{upload_id}"
-        if not process_zip_file_streaming(bucket_name, object_key, extracted_prefix, user_id):
-            print("ZIP processing failed")
+        if not process_zip_file_streaming(bucket_name, object_key, extracted_prefix, user_id, company_id, upload_id):
+            print("Processing failed")
             return {
                 "statusCode": 500,
                 "body": "Processing failed"
@@ -56,13 +56,16 @@ def lambda_handler(event, context):
         print(hierarchy)  # Print the hierarchy to see if it's populated
 
         # Insert hierarchy data into the database
-        if not insert_hierarchy_data(hierarchy):
+        
+        if not insert_hierarchy_data(upload_id,hierarchy):
             send_error_notification(
                 error_type="DATABASE_ERROR",
                 error_title="Hierarchy Insertion Failed",
                 error_description="Failed to insert hierarchy data into the database.",
                 user_id=user_id
             )
+        
+
 
         # Cleanup extracted files
         cleanup_extracted_files(extracted_folder)
