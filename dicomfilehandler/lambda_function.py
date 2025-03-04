@@ -1,9 +1,9 @@
 import json
 from uuid import uuid4
 from notifications import send_error_notification, send_success_notification
-from database import update_file_record, insert_status_history, insert_hierarchy_data
-from zip_processor import process_zip_file_streaming
-from series_extract import process_dicom_files, cleanup_extracted_files
+from database import update_file_record, insert_status_history, insert_hierarchy_data, insert_patient_data
+from zip_processer import process_zip_file_streaming, remove_leftover_zip_files
+from series_extract import process_dicom_files, cleanup_extracted_files, extract_patient_data_from_dicom 
 import os
 
 def lambda_handler(event, context):
@@ -50,24 +50,30 @@ def lambda_handler(event, context):
         else:
             print(f"Directory does not exist: {extracted_folder}")
 
-        # Process DICOM files
-        hierarchy = process_dicom_files(extracted_folder)
-        print("Hierarchy after processing DICOM files:")
-        print(hierarchy)  # Print the hierarchy to see if it's populated
+        remove_leftover_zip_files(extracted_folder)
 
-        # Insert hierarchy data into the database
-        
-        if not insert_hierarchy_data(upload_id,hierarchy):
+        # Process DICOM files
+        hierarchy = process_dicom_files(extracted_folder,user_id,upload_id)
+        # Print the hierarchy to see if it's populated
+        # Cleanup extracted files
+        print(f"Skipping duplicate entry for series_id: {hierarchy}")
+        if not insert_hierarchy_data(hierarchy):
             send_error_notification(
                 error_type="DATABASE_ERROR",
                 error_title="Hierarchy Insertion Failed",
                 error_description="Failed to insert hierarchy data into the database.",
                 user_id=user_id
             )
-        
 
-
-        # Cleanup extracted files
+        patients = extract_patient_data_from_dicom(extracted_folder,user_id,upload_id)
+        print(f"Checking entries for Patients: {patients}")
+        if not insert_patient_data(patients):
+            send_error_notification(
+                error_type="DATABASE_ERROR",
+                error_title="patients Insertion Failed",
+                error_description="Failed to insert patients data into the database.",
+                user_id=user_id
+            )
         cleanup_extracted_files(extracted_folder)
 
         # Update file record status

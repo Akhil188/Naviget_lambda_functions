@@ -34,4 +34,9 @@ class DatabaseHandler:
             'pre_signed_json': presigned_json_url,
             'image_url': image_url
         }
-        self.supabase.table('file_conversion').insert(data).execute() 
+        self.supabase.table('file_conversion').insert(data).execute()
+
+    def fetch_series_ids(self, file_id: str) -> list:
+        """Fetch all series_id values with an active status using file_id."""
+        response = self.supabase.table('series').select('series_id').eq('file_id', file_id).eq('status', 'Active').execute()
+        return [row['series_id'] for row in response.data] if response.data else []

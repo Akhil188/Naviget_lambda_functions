@@ -108,11 +108,20 @@ def lambda_handler(event, context):
                 )
                 raise ValueError("Missing required keys in SNS message.")
 
+            # Fetch series_ids with active status
+            series_ids = db_handler.fetch_series_ids(upload_id)  # Assuming upload_id is used to fetch series_ids
+            if not series_ids:
+                print(f"No active series found for upload_id: {upload_id}")
+                continue  # Skip processing if no active series_ids
+
+            # Initialize series_data to store pixel data and metadata for each series_id
+            series_data = {series_id: {'pixel_data': [], 'metadata': {}} for series_id in series_ids}
+
             # Define S3 paths
             bucket = 'naviget-user-data-files'
             folder_key = f"{company_id}/{user_id}/uploads/{upload_id}/extracted/{upload_id}"
             print("----------------------------")
-            print('folder_key',folder_key)
+            print('folder_key', folder_key)
             folder_key = folder_key.rstrip('/') + '/'
             print(f"S3 Folder Key: {folder_key}")
 
@@ -122,7 +131,7 @@ def lambda_handler(event, context):
                 for obj in response["Contents"]:
                     if obj["Key"].endswith("/"):
                         continue
-                # Dynamically determine the deepest subfolder where files exist
+                    # Dynamically determine the deepest subfolder where files exist
                     possible_folder = os.path.dirname(obj["Key"]) + "/"
                     print(f"Detected actual folder path: {possible_folder}")
                     folder_key = possible_folder  # Update to the correct folder
@@ -140,12 +149,9 @@ def lambda_handler(event, context):
                     error_description=f"No files found in folder: {folder_key}",
                     user_id=user_id
                 )
-                return {
-                    'statusCode': 400,
-                    'body': json.dumps(f'No files found in the folder: {folder_key}')
-                }
+                continue  # Skip to the next series_id
 
-            # Process DICOM files
+            # Process DICOM files for the current series_id
             combined_pixel_data = []
             combined_metadata = {}
             valid_shape = (512, 512)
@@ -154,6 +160,7 @@ def lambda_handler(event, context):
 
             for file_obj in response['Contents']:
                 key = file_obj['Key']
+                print(f"Processing file: {key}")  # Log the file being processed
                 if key.endswith('/') or not is_dicom_file(key):
                     print(f"Skipping non-DICOM file or directory: {key}")
                     continue
@@ -167,113 +174,91 @@ def lambda_handler(event, context):
                         dicom_dataset = pydicom.dcmread(tmp_input_path, force=True)
                         if w:
                             warning_messages.extend([str(warn.message) for warn in w])
-                    
-                    if hasattr(dicom_dataset, "PixelData"):
-                        try:
-                            pixel_array = process_pixel_data(dicom_dataset, key)
-                            current_shape = pixel_array.shape
-                            
-                            if current_shape == valid_shape:
-                                combined_pixel_data.append(pixel_array)
-                                processed_files += 1
-                                print(f"Successfully processed file: {key}")
-                            else:
-                                msg = f"Skipping file with invalid shape: {key} - Shape: {current_shape}"
-                                print(msg)
-                                warning_messages.append(msg)
-                        except Exception as e:
-                            error_msg = f"Error processing pixel data from {os.path.basename(key)}: {str(e)}"
-                            print(error_msg)
-                            warning_messages.append(error_msg)
-                    else:
-                        print(f"No pixel data found in file: {key}")
+                        series_instance_uid = getattr(dicom_dataset, 'SeriesInstanceUID', None)
+                        print(f"File Series ID: {series_instance_uid}")
 
-                    file_metadata = dicom_processor.process_dicom_metadata(dicom_dataset)
-                    for tag, value in file_metadata.items():
-                        if tag not in combined_metadata:
-                            combined_metadata[tag] = value
+                    if series_instance_uid in series_data:
+                        if hasattr(dicom_dataset, "PixelData"):
+                            try:
+                                pixel_array = process_pixel_data(dicom_dataset, key)
+                                current_shape = pixel_array.shape
+                                
+                                if current_shape == valid_shape:
+                                    series_data[series_instance_uid]['pixel_data'].append(pixel_array)
+                                    processed_files += 1
+                                    print(f"Successfully processed file: {key}")
+                                else:
+                                    msg = f"Skipping file with invalid shape: {key} - Shape: {current_shape}"
+                                    print(msg)
+                                    warning_messages.append(msg)
+                            except Exception as e:
+                                error_msg = f"Error processing pixel data from {os.path.basename(key)}: {str(e)}"
+                                print(error_msg)
+                                warning_messages.append(error_msg)
+                        else:
+                            print(f"No pixel data found in file: {key}")
+
+                        file_metadata = dicom_processor.process_dicom_metadata(dicom_dataset)
+                        series_data[series_instance_uid]['metadata'].update(file_metadata)
                 except Exception as e:
                     print(f"Error processing DICOM file {key}: {str(e)}")
                     warning_messages.append(f"Failed to process {os.path.basename(key)}: {str(e)}")
                 finally:
                     os.remove(tmp_input_path)
 
-            if not combined_pixel_data:
-                error_msg = "No valid DICOM files were processed successfully"
-                print(error_msg)
-                sns_handler.send_error_notification(
-                    error_type="PROCESSING_ERROR",
-                    error_title="No Valid DICOM Data",
-                    error_description=error_msg,
-                    user_id=user_id
-                )
-                return {
-                    'statusCode': 400,
-                    'body': json.dumps(error_msg)
-                }
+            # Process combined data for each series in series_ids
+            for series_id in series_ids:
+                if not series_data[series_id]['pixel_data']:
+                    print(f"No valid data for Series ID: {series_id}")
+                    continue
 
-            # Process combined data
-            try:
-                combined_pixel_data = np.concatenate(combined_pixel_data, axis=0)
-                print(f"Successfully combined {processed_files} files into shape {combined_pixel_data.shape}")
-            except Exception as e:
-                error_msg = f"Error combining pixel data: {str(e)}"
-                print(error_msg)
-                sns_handler.send_error_notification(
-                    error_type="PROCESSING_ERROR",
-                    error_title="Data Combination Failed",
-                    error_description=error_msg,
-                    user_id=user_id
-                )
-                return {
-                    'statusCode': 500,
-                    'body': json.dumps(error_msg)
-                }
+                try:
+                    combined_pixel_data = np.concatenate(series_data[series_id]['pixel_data'], axis=0)
+                    print(f"Successfully combined files for Series {series_id} into shape {combined_pixel_data.shape}")
+                except Exception as e:
+                    error_msg = f"Error combining pixel data for Series {series_id}: {str(e)}"
+                    print(error_msg)
+                    sns_handler.send_error_notification(
+                        error_type="PROCESSING_ERROR",
+                        error_title="Data Combination Failed",
+                        error_description=error_msg,
+                        user_id=user_id
+                    )
+                    continue
 
-            # Define output paths
-            parent_folder = folder_key.rsplit('/', 6)[0]
-            print('parent_folder',parent_folder)
-            base_output_key = f"{parent_folder}/temp/{upload_id}"
-            raw_output_key = f"{base_output_key}.raw"
-            metadata_output_key = f"{base_output_key}-settings.json"
+                # Define output paths
+                parent_folder = f"{company_id}/{user_id}/uploads/{upload_id}/temp"
+                raw_output_key = f"{parent_folder}/Raw_files/{series_id}.raw"
+                metadata_output_key = f"{parent_folder}/Json_files/{series_id}-settings.json"
+                
+                tmp_raw_path = f"/tmp/{series_id}.raw"
+                tmp_metadata_path = f"/tmp/{series_id}-settings.json"
+                
+                # Save raw data
+                combined_pixel_data.tofile(tmp_raw_path)
+                s3_handler.upload_file(tmp_raw_path, bucket, raw_output_key)
 
-            # Save and upload files
-            tmp_raw_path = f"/tmp/{upload_id}.raw"
-            tmp_metadata_path = f"/tmp/{upload_id}-settings.json"
+                # Save metadata
+                with open(tmp_metadata_path, 'w') as meta_file:
+                    json.dump(series_data[series_id]['metadata'], meta_file)
+                s3_handler.upload_file(tmp_metadata_path, bucket, metadata_output_key)
 
-            try:
-                # Write RAW file
-                if combined_pixel_data is not None:
-                    with open(tmp_raw_path, 'wb') as raw_file:
-                        combined_pixel_data.tofile(raw_file)
+                # Generate presigned URLs
+                raw_file_url = s3_handler.generate_presigned_url(bucket, raw_output_key)
+                json_file_url = s3_handler.generate_presigned_url(bucket, metadata_output_key)
 
-                # Prepare and write metadata
-                output_dimensions = {
-                    "width": int(combined_pixel_data.shape[1]) if combined_pixel_data is not None else 0,
-                    "height": int(combined_pixel_data.shape[0]) if combined_pixel_data is not None else 0,
-                    "depth": int(combined_pixel_data.shape[2]) if combined_pixel_data is not None and len(combined_pixel_data.shape) > 2 else 1
-                }
-
-                metadata_json = {
-                    "dicom_metadata": combined_metadata,
-                    "output_dimensions": output_dimensions,
-                    "voxel_scale": {"x": 1.0, "y": 1.0, "z": 1.0},
-                    "processing_info": {
-                        "files_processed": processed_files,
-                        "warnings": warning_messages,
-                        "processed_at": datetime.utcnow().isoformat()
-                    }
-                }
-
+                # After processing combined data
                 # Get study description from metadata
-                study_description = combined_metadata.get('StudyDescription', '')
+                study_description = series_data[series_id]['metadata'].get('StudyDescription', '')
+                image_url = None  # Initialize image_url
+
                 if study_description:
                     # Generate and save the AI image
                     image_data = openai_handler.generate_medical_image(study_description)
                     if image_data:
                         # Define image path
-                        image_output_key = f"{base_output_key}_ai_visualization.png"
-                        tmp_image_path = f"/tmp/{upload_id}_ai_visualization.png"
+                        image_output_key = f"{parent_folder}/images/{upload_id}_{series_id}_ai_visualization.png"  # Store in images folder
+                        tmp_image_path = f"/tmp/{upload_id}_{series_id}_ai_visualization.png"
                         
                         # Save image temporarily
                         with open(tmp_image_path, 'wb') as f:
@@ -285,55 +270,37 @@ def lambda_handler(event, context):
                         # Generate presigned URL for the image
                         image_url = s3_handler.generate_presigned_url(bucket, image_output_key)
                         
-                        # Add image information to metadata
-                        metadata_json['ai_visualization'] = {
-                            'url': image_url,
-                            'generated_from': study_description
-                        }
-                        
                         # Cleanup
                         os.remove(tmp_image_path)
 
-                with open(tmp_metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump(metadata_json, f, indent=4, ensure_ascii=False)
+                # Update database with presigned URLs
+                db_handler.insert_file_conversion(conversion_id, upload_id, 'pending', raw_output_key, raw_file_url, json_file_url, image_url)
 
-                # Upload to S3
-                s3_handler.upload_file(tmp_raw_path, bucket, raw_output_key)
-                s3_handler.upload_file(tmp_metadata_path, bucket, metadata_output_key)
+                # Send success notification
+                sns_message = {
+                    "company_id": company_id,
+                    "user_id": user_id,
+                    "upload_id": upload_id,
+                    "status_id": status_id,
+                    "conversion_id": conversion_id,
+                    "status": "Success",
+                    "message": "Successfully extracted raw file and generated AI image",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                print(sns_message)
+                sns_handler.send_success_notification(sns_message)
 
-            finally:
-                # Cleanup
-                if os.path.exists(tmp_raw_path):
-                    os.remove(tmp_raw_path)
-                if os.path.exists(tmp_metadata_path):
-                    os.remove(tmp_metadata_path)
-
-            # Generate presigned URLs
-            raw_file_url = s3_handler.generate_presigned_url(bucket, raw_output_key)
-            json_file_url = s3_handler.generate_presigned_url(bucket, metadata_output_key)
-
-            # Update database
-            db_handler.update_files_status(upload_id, 'raw_file_generated')
-            db_handler.update_status_history(status_id, 'raw_file_generated', 'Raw File has been extracted.')
-            db_handler.insert_file_conversion(conversion_id, upload_id, 'pending', raw_output_key, raw_file_url, json_file_url, image_url)
-
-            # Send success notification
-            sns_message = {
-                "company_id": company_id,
-                "user_id": user_id,
-                "upload_id": upload_id,
-                "status_id": status_id,
-                "conversion_id": conversion_id,
-                "status": "Success",
-                "message": "Successfully extracted raw file",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            print(sns_message)
-            sns_handler.send_success_notification(sns_message)
+            # Ensure cleanup is outside the for loop
+            # finally:
+            #     # Cleanup
+            #     if os.path.exists(tmp_raw_path):
+            #         os.remove(tmp_raw_path)
+            #     if os.path.exists(tmp_metadata_path):
+            #         os.remove(tmp_metadata_path)
 
         return {
             'statusCode': 200,
-            'body': json.dumps('Processing completed successfully')
+            'body': json.dumps("Processing completed successfully")
         }
 
     except Exception as e:
